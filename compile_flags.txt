@@ -1,0 +1,7 @@
+--cuda-gpu-arch=sm_75
+-L/usr/local/cuda/lib64
+-lcudart_static
+-ldl
+-lrt
+-pthread
+-std=c++14
