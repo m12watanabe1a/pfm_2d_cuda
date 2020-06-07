@@ -6,11 +6,6 @@
 #include <vector>
 #include <fstream>
 
-// TODO: impletemnt PFM to GPU
-__global__ void cuda_hello() {
-  printf("Hello Cuda!\n");
-}
-
 const unsigned int x_length = 53;
 const unsigned int y_length = 53;
 
