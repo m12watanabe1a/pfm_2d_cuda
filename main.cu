@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include <math.h>
+#include <vector>
 
 using namespace std;
 
@@ -8,10 +8,12 @@ __global__ void cuda_hello() {
   printf("Hello Cuda!\n");
 }
 
+const unsigned int x_max = 52;
+const unsigned int y_max = 52;
 
 int main() {
-  const unsigned int x_max = 52;
-  const unsigned int y_max = 52;
+  std::vector<std::vector<double>> phase(y_max, std::vector<double>(x_max, 0));
+  std::vector<std::vector<double>> phase_tmp(y_max, std::vector<double>(y_max, 0));
 
   // 格子サイズ
   float dx = 5e-6;
@@ -40,6 +42,16 @@ int main() {
   unsigned int n = 100;
   // 固相初期半径
   float r0 = .5 * x_max * dx;
+
+  // 境界条件
+  for (unsigned int x_i = 0; x_i < x_max; x_i++) {
+    phase.at(0).at(x_i) = phase.at(1).at(x_i);
+    phase.at(y_max).at(x_i) = phase.at(y_max - 1).at(x_i);
+  }
+  for (unsigned int y_i = 0; y_i < y_max; y_i++) {
+    phase.at(y_i).at(0) = phase.at(1).at(y_i);
+    phase.at(y_i).at(x_max) = phase.at(y_i).at(x_max - 1);
+  }
 
   return 0;
 }
