@@ -33,8 +33,8 @@ bool save(std::vector<std::vector<double>> phase, unsigned int n) {
 }
 
 int main() {
-  std::vector<std::vector<double>> phase(y_length, std::vector<double>(x_length, 0));
-  std::vector<std::vector<double>> phase_tmp(y_length, std::vector<double>(x_length, 0));
+  double *phase, *phase_tmp;
+  unsigned int size = y_length * x_length;
 
   // 格子サイズ
   float dx = 5e-7;
