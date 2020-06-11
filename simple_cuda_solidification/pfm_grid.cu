@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <iostream>
 #include <ostream>
 #include <sstream>
@@ -8,6 +9,38 @@
 
 const unsigned int x_length = 53;
 const unsigned int y_length = 53;
+const float dx = 5e-7;
+const float dy = 5e-7;
+const float beta = .5;
+const unsigned int step = 100;
+
+__global__ void calc_step(double *d_phase, double *d_phase_tmp, float a, float w, float tau) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= x_length - 1 || y_i <= 0 || y_i >= y_length - 1) return;
+
+  int i = y_i * x_length + x_i;
+  double rpx = (d_phase[i + 1] - 2.* d_phase[i] + d_phase[i - 1]) / (dx * dx);
+  double rpy = (d_phase[i + x_length] - 2. * d_phase[i] + d_phase[i - x_length]) / (dy * dy);
+
+  double dpi1 = a * a * (rpx + rpy);
+  double dpi2 = 4. * w * d_phase[i] * (1 - d_phase[i]) * (d_phase[i] - .5 + beta);
+  double dpi = dpi1 + dpi2;
+  d_phase_tmp[i] = d_phase[i] * tau * dpi;
+}
+
+// 境界条件
+double* set_bc(double *phase) {
+  for (unsigned int x_i = 0; x_i < x_length; x_i++) {
+    phase[x_i] = phase[x_length + x_i];
+    phase[(y_length -1) * x_length + x_i] = phase[(y_length - 2) * x_length + x_i];
+  }
+  for (unsigned int y_i = 0; y_i < y_length; y_i++) {
+    phase[y_i * x_length] = phase[y_i * x_length + 1];
+    phase[(y_i + 1)*x_length - 1] = phase[(y_i + 1)*x_length - 2];
+  }
+  return phase;
+}
 
 bool save(double *phase, unsigned int n) {
   try {
@@ -34,15 +67,11 @@ bool save(double *phase, unsigned int n) {
 
 int main() {
   unsigned int N = y_length * x_length;
-  double *phase = new double[N];
-  double *phase_tmp = new double[N];
-  for (int i = 0; i < N; i++) {
-    phase[i] = 0.0;
-    phase_tmp[i] = 0.0;
-  }
-  // 格子サイズ
-  float dx = 5e-7;
-  float dy = 5e-7;
+  double *phase; // phase field for host
+  double *d_phase, *d_phase_tmp; // phase field for device
+
+  phase = (double *)malloc(N * sizeof(double));
+
   // 界面エネルギー
   float gamma = 1.;
   // 界面幅
@@ -58,73 +87,62 @@ int main() {
   float w = 6. * gamma * b / delta;
   // フェーズフィールドモビリティ
   float M_phi = M * std::sqrt(2. * w) / (6. * a);
-  // パラメータ
-  float beta = 0.5;
   // 時間ステップ
   float dt = dx * dx / (5. * M_phi * a * a);
   printf("Time Step: %.3e[s]\n", dt);
-  // 計算ステップ
-  unsigned int step = 100;
   // 固相初期半径
   float r0 = .5 * (x_length - 1) * dx;
 
+  float tau = M_phi * dt;
 
   // 初期条件セット
-  // メインループ
-  for (unsigned int y_i = 1; y_i < y_length - 1; y_i++) {
-    for (unsigned int x_i = 1; x_i < x_length - 1; x_i++) {
+  for (unsigned int y_i = 0; y_i < y_length; y_i++) {
+    for (unsigned int x_i = 0; x_i < x_length; x_i++) {
+      int i = y_i * x_length + x_i;
+      if (x_i <= 0 || x_i >= x_length - 1 || y_i <= 0 || y_i >= y_length - 1) {
+        phase[i] = 0.0;
+        continue;
+      }
       float y = (y_i - 1) * dy;
       float x = (x_i - 1) * dx;
 
       float r = std::sqrt(x*x + y*y) - r0;
-      phase[y_i * x_length + x_i] = .5 * (1. - std::tanh(std::sqrt(2. * w) / (2. * a) * r));
+      phase[i] = .5 * (1. - std::tanh(std::sqrt(2. * w) / (2. * a) * r));
     }
   }
-  printf("OK");
-  // 境界条件
-  for (unsigned int x_i = 0; x_i < x_length; x_i++) {
-    phase[x_i] = phase[x_length + x_i];
-    phase[(y_length -1) * x_length + x_i] = phase[(y_length - 2) * x_length + x_i];
-  }
-  for (unsigned int y_i = 0; y_i < y_length; y_i++) {
-    phase[y_i * x_length] = phase[y_i * x_length + 1];
-    phase[(y_i + 1)*x_length - 1] = phase[(y_i + 1)*x_length - 2];
-  }
+
+  set_bc(phase);
+
+  // allocate memory to GPU
+  cudaMalloc((void**)&d_phase, N * sizeof(double));
+  cudaMalloc((void**)&d_phase_tmp, N * sizeof(double));
+
+
+  dim3 blocks(32, 32);
+  dim3 grid(2, 2);
 
   // メインループ
   for (unsigned int n = 0; n < step; n++) {
     printf("step: %d\n", n);
-    for (unsigned int y_i = 1; y_i < y_length - 1; y_i++) {
-      for (unsigned int x_i = 1; x_i < x_length - 1; x_i++) {
-        double rpx = (phase[y_i * x_length + x_i + 1] - 2.* phase[y_i * x_length + x_i] + phase[y_i * x_length + x_i - 1]) / (dx * dx);
-        double rpy = (phase[(y_i + 1) * x_length + x_i] - 2. * phase[y_i * x_length + x_i] + phase[(y_i - 1) * x_length + x_i]) / (dy * dy);
 
-        double dpi1 = a * a * (rpx + rpy);
-        double dpi2 = 4. * w * phase[y_i * x_length + x_i] * (1 - phase[y_i * x_length + x_i]) * (phase[y_i * x_length + x_i] - .5 + beta);
-        double dpi = dpi1 + dpi2;
-        phase_tmp[y_i * x_length + x_i] = phase[y_i * x_length + x_i] + M_phi * dpi * dt;
-      }
-    }
+    // copy memory on GPU
+    cudaMemcpy(d_phase, phase, N * sizeof(double), cudaMemcpyHostToDevice);
 
+    calc_step<<<grid, blocks>>>(d_phase, d_phase_tmp, a, w, tau);
+    cudaDeviceSynchronize();
     save(phase, n);
 
     // Swap
-    for (unsigned int y_i = 1; y_i < y_length - 1; y_i++) {
-      for (unsigned int x_i = 1; x_i < x_length - 1; x_i++) {
-        phase[y_i * x_length + x_i] = phase_tmp[y_i * x_length + x_i];
-      }
-    }
+    cudaMemcpy(phase, d_phase_tmp, N * sizeof(double), cudaMemcpyDeviceToHost);
 
-    // 境界条件
-    for (unsigned int x_i = 0; x_i < x_length; x_i++) {
-      phase[x_i] = phase[x_length + x_i];
-      phase[(y_length -1) * x_length + x_i] = phase[(y_length - 2) * x_length + x_i];
-    }
-    for (unsigned int y_i = 0; y_i < y_length; y_i++) {
-      phase[y_i * x_length] = phase[y_i * x_length + 1];
-      phase[(y_i + 1)*x_length - 1] = phase[(y_i + 1)*x_length - 2];
-    }
+    // Boundary Condition
+    set_bc(phase);
+
   }
+
+  free(phase);
+  cudaFree(d_phase);
+  cudaFree(d_phase_tmp);
 
   return 0;
 }
