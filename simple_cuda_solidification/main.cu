@@ -9,7 +9,7 @@
 const unsigned int x_length = 53;
 const unsigned int y_length = 53;
 
-bool save(std::vector<std::vector<double>> phase, unsigned int n) {
+bool save(double *phase, unsigned int n) {
   try {
     std::ofstream file;
     std::ostringstream filename;
@@ -20,7 +20,7 @@ bool save(std::vector<std::vector<double>> phase, unsigned int n) {
     // remove boundaries
     for (unsigned int y_i = 1; y_i < y_length - 1; y_i++) {
       for (unsigned int x_i = 1; x_i < x_length - 1; x_i++) {
-        file << y_i << ' ' <<  x_i << ' ' << phase.at(y_i).at(x_i) << std::endl;
+        file << y_i << ' ' <<  x_i << ' ' << phase[y_i * x_length + x_i] << std::endl;
       }
       file << std::endl;
     }
@@ -33,9 +33,13 @@ bool save(std::vector<std::vector<double>> phase, unsigned int n) {
 }
 
 int main() {
-  double *phase, *phase_tmp;
-  unsigned int size = y_length * x_length;
-
+  unsigned int N = y_length * x_length;
+  double *phase = new double[N];
+  double *phase_tmp = new double[N];
+  for (int i = 0; i < N; i++) {
+    phase[i] = 0.0;
+    phase_tmp[i] = 0.0;
+  }
   // 格子サイズ
   float dx = 5e-7;
   float dy = 5e-7;
@@ -73,17 +77,18 @@ int main() {
       float x = (x_i - 1) * dx;
 
       float r = std::sqrt(x*x + y*y) - r0;
-      phase.at(y_i).at(x_i) = .5 * (1. - std::tanh(std::sqrt(2. * w) / (2. * a) * r));
+      phase[y_i * x_length + x_i] = .5 * (1. - std::tanh(std::sqrt(2. * w) / (2. * a) * r));
     }
   }
+  printf("OK");
   // 境界条件
   for (unsigned int x_i = 0; x_i < x_length; x_i++) {
-    phase.at(0).at(x_i) = phase.at(1).at(x_i);
-    phase.at(y_length - 1).at(x_i) = phase.at(y_length - 2).at(x_i);
+    phase[x_i] = phase[x_length + x_i];
+    phase[(y_length -1) * x_length + x_i] = phase[(y_length - 2) * x_length + x_i];
   }
   for (unsigned int y_i = 0; y_i < y_length; y_i++) {
-    phase.at(y_i).at(0) = phase.at(1).at(y_i);
-    phase.at(y_i).at(x_length - 1) = phase.at(y_i).at(x_length - 2);
+    phase[y_i * x_length] = phase[y_i * x_length + 1];
+    phase[(y_i + 1)*x_length - 1] = phase[(y_i + 1)*x_length - 2];
   }
 
   // メインループ
@@ -91,13 +96,13 @@ int main() {
     printf("step: %d\n", n);
     for (unsigned int y_i = 1; y_i < y_length - 1; y_i++) {
       for (unsigned int x_i = 1; x_i < x_length - 1; x_i++) {
-        double rpx = (phase.at(y_i).at(x_i + 1) - 2. * phase.at(y_i).at(x_i) + phase.at(y_i).at(x_i - 1)) / (dx * dx);
-        double rpy = (phase.at(y_i + 1).at(x_i) - 2. * phase.at(y_i).at(x_i) + phase.at(y_i - 1).at(x_i)) / (dy * dy);
+        double rpx = (phase[y_i * x_length + x_i + 1] - 2.* phase[y_i * x_length + x_i] + phase[y_i * x_length + x_i - 1]) / (dx * dx);
+        double rpy = (phase[(y_i + 1) * x_length + x_i] - 2. * phase[y_i * x_length + x_i] + phase[(y_i - 1) * x_length + x_i]) / (dy * dy);
 
         double dpi1 = a * a * (rpx + rpy);
-        double dpi2 = 4. * w * phase.at(y_i).at(x_i) * (1 - phase.at(y_i).at(x_i)) * (phase.at(y_i).at(x_i) - .5 + beta);
+        double dpi2 = 4. * w * phase[y_i * x_length + x_i] * (1 - phase[y_i * x_length + x_i]) * (phase[y_i * x_length + x_i] - .5 + beta);
         double dpi = dpi1 + dpi2;
-        phase_tmp.at(y_i).at(x_i) = phase.at(y_i).at(x_i) + M_phi * dpi * dt;
+        phase_tmp[y_i * x_length + x_i] = phase[y_i * x_length + x_i] + M_phi * dpi * dt;
       }
     }
 
@@ -106,18 +111,18 @@ int main() {
     // Swap
     for (unsigned int y_i = 1; y_i < y_length - 1; y_i++) {
       for (unsigned int x_i = 1; x_i < x_length - 1; x_i++) {
-        phase.at(y_i).at(x_i) = phase_tmp.at(y_i).at(x_i);
+        phase[y_i * x_length + x_i] = phase_tmp[y_i * x_length + x_i];
       }
     }
 
     // 境界条件
     for (unsigned int x_i = 0; x_i < x_length; x_i++) {
-      phase.at(0).at(x_i) = phase.at(1).at(x_i);
-      phase.at(y_length - 1).at(x_i) = phase.at(y_length - 2).at(x_i);
+      phase[x_i] = phase[x_length + x_i];
+      phase[(y_length -1) * x_length + x_i] = phase[(y_length - 2) * x_length + x_i];
     }
     for (unsigned int y_i = 0; y_i < y_length; y_i++) {
-      phase.at(y_i).at(0) = phase.at(1).at(y_i);
-      phase.at(y_i).at(x_length - 1) = phase.at(y_i).at(x_length - 2);
+      phase[y_i * x_length] = phase[y_i * x_length + 1];
+      phase[(y_i + 1)*x_length - 1] = phase[(y_i + 1)*x_length - 2];
     }
   }
 
