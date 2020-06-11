@@ -6,3 +6,5 @@
 *.cubin
 *.fatbin
 *.out
+
+.ccls-cache
