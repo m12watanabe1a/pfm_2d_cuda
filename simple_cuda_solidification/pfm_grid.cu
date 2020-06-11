@@ -7,14 +7,19 @@
 #include <vector>
 #include <fstream>
 
-const unsigned int x_length = 53;
-const unsigned int y_length = 53;
+const unsigned int field_size = 53;
+const unsigned int x_length = field_size;
+const unsigned int y_length = field_size;
 const float dx = 5e-7;
 const float dy = 5e-7;
 const float beta = .5;
 const unsigned int step = 100;
 
-__global__ void calc_step(double *d_phase, double *d_phase_tmp, float a, float w, float tau) {
+__device__ float d_a;
+__device__ float d_w;
+__device__ float d_tau;
+
+__global__ void calc_step(double *d_phase, double *d_phase_tmp) {
   int x_i = blockIdx.x * blockDim.x + threadIdx.x;
   int y_i = blockIdx.y * blockDim.y + threadIdx.y;
   if (x_i <= 0 || x_i >= x_length - 1 || y_i <= 0 || y_i >= y_length - 1) return;
@@ -23,10 +28,10 @@ __global__ void calc_step(double *d_phase, double *d_phase_tmp, float a, float w
   double rpx = (d_phase[i + 1] - 2.* d_phase[i] + d_phase[i - 1]) / (dx * dx);
   double rpy = (d_phase[i + x_length] - 2. * d_phase[i] + d_phase[i - x_length]) / (dy * dy);
 
-  double dpi1 = a * a * (rpx + rpy);
-  double dpi2 = 4. * w * d_phase[i] * (1 - d_phase[i]) * (d_phase[i] - .5 + beta);
+  double dpi1 = d_a * d_a * (rpx + rpy);
+  double dpi2 = 4. * d_w * d_phase[i] * (1 - d_phase[i]) * (d_phase[i] - .5 + beta);
   double dpi = dpi1 + dpi2;
-  d_phase_tmp[i] = d_phase[i] * tau * dpi;
+  d_phase_tmp[i] = d_phase[i] + d_tau * dpi;
 }
 
 // 境界条件
@@ -95,6 +100,10 @@ int main() {
 
   float tau = M_phi * dt;
 
+  cudaMemcpyToSymbol(d_a, &a, sizeof(float));
+  cudaMemcpyToSymbol(d_w, &w, sizeof(float));
+  cudaMemcpyToSymbol(d_tau, &tau, sizeof(float));
+
   // 初期条件セット
   for (unsigned int y_i = 0; y_i < y_length; y_i++) {
     for (unsigned int x_i = 0; x_i < x_length; x_i++) {
@@ -118,8 +127,10 @@ int main() {
   cudaMalloc((void**)&d_phase_tmp, N * sizeof(double));
 
 
-  dim3 blocks(32, 32);
-  dim3 grid(2, 2);
+  int threadsPerBlock = 32;
+  int blocksInGrid = (field_size + threadsPerBlock -1)/threadsPerBlock;
+  dim3 blocks(threadsPerBlock, threadsPerBlock);
+  dim3 grid(blocksInGrid, blocksInGrid);
 
   // メインループ
   for (unsigned int n = 0; n < step; n++) {
@@ -128,7 +139,7 @@ int main() {
     // copy memory on GPU
     cudaMemcpy(d_phase, phase, N * sizeof(double), cudaMemcpyHostToDevice);
 
-    calc_step<<<grid, blocks>>>(d_phase, d_phase_tmp, a, w, tau);
+    calc_step<<<grid, blocks>>>(d_phase, d_phase_tmp);
     cudaDeviceSynchronize();
     save(phase, n);
 
