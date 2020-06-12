@@ -40,7 +40,19 @@ __global__ void calc_step(float *d_phase, float *d_T, float *d_phase_tmp, float 
   float rpy = (d_phase[i + d_field_size] - d_phase[i - d_field_size]) / d_dx;
   float theta = atan2(rpy, rpx);
 
+  return;
+}
 
+
+__global__ void calc_phase_term_1(float *d_phase_term_1_tmp, float *d_phase_term_1) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  float rtx = (d_phase_term_1_tmp[i + 1] - d_phase_term_1_tmp[i + 1]) / d_dx;
+  float rty = (d_phase_term_1_tmp[i + d_field_size] - d_phase_term_1_tmp[i - d_field_size]) / d_dx;
+  d_phase_term_1[i] = rtx + rty;
   return;
 }
 
@@ -57,15 +69,30 @@ __global__ void calc_phase_term_1_tmp(float *d_rpx, float *d_rpy, float *d_theta
   return;
 }
 
-__global__ void calc_phase_term_1(float *d_phase_term_1_tmp, float *d_phase_term_1) {
+__global__ void calc_phase_term_2(float *d_phase_term_2_tmp_x, float *d_phase_term_2_tmp_y, float *d_phase_term_2){
   int x_i = blockIdx.x * blockDim.x + threadIdx.x;
   int y_i = blockIdx.y * blockDim.y + threadIdx.y;
   if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
   int i = y_i * d_field_size + x_i;
 
-  float rtx = (d_phase_term_1_tmp[i + 1] - d_phase_term_1_tmp[i + 1]) / d_dx;
-  float rty = (d_phase_term_1_tmp[i + d_field_size] - d_phase_term_1_tmp[i - d_field_size]) / d_dx;
-  d_phase_term_1[i] = rtx + rty;
+  float rtx = (d_phase_term_2_tmp_x[i + 1] - d_phase_term_2_tmp_x[i - 1]) / d_dx;
+  float rty = (d_phase_term_2_tmp_y[i + field_size] - d_phase_term_2_tmp_y[i - field_size]) / d_dx;
+
+  d_phase_term_2[i] = -rtx + rty;
+  return;
+}
+
+__global__ void calc_phase_term_2_tmp(float *d_rpx, float *d_rpy, float *d_theta, float *d_phase_term_2_tmp_x, float *d_phase_term_2_tmp_y) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  float a = get_a(d_theta[i]);
+  float rat = get_rat(d_theta[i]);
+
+  d_phase_term_2_tmp_x[i] = a * rat * d_rpy[i];
+  d_phase_term_2_tmp_y[i] = a * rat * d_rpx[i];
   return;
 }
 
@@ -141,6 +168,7 @@ int main() {
   float *d_phase, *d_phase_tmp, *d_T, *d_T_tmp; // phase field for device
   float *d_rpx, *d_rpy, *d_theta;
   float *d_phase_term_1, *d_phase_term_1_tmp;
+  float *d_phase_term_2, *d_phase_term_2_tmp_x, *d_phase_term_2_tmp_y;
 
   // allocate memory to GPU
   size_t size_field;
@@ -153,6 +181,9 @@ int main() {
   cudaMalloc((void**)&d_theta, size_field);
   cudaMalloc((void**)&d_phase_term_1, size_field);
   cudaMalloc((void**)&d_phase_term_1_tmp, size_field);
+  cudaMalloc((void**)&d_phase_term_2, size_field);
+  cudaMalloc((void**)&d_phase_term_2_tmp_x, size_field);
+  cudaMalloc((void**)&d_phase_term_2_tmp_y, size_field);
 
 
   // 異方性強度
@@ -250,8 +281,14 @@ int main() {
 
     calc_phase_nabla<<<grid, blocks>>>(d_phase, d_rpx, d_rpy);
     calc_theta<<<grid, blocks>>>(d_rpx, d_rpy, d_theta);
+
     calc_phase_term_1_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_phase, d_phase_term_1_tmp);
-    calc_phase_term_1<<<grid,blocks>>>(d_phase_term_1_tmp, d_phase_term_1);
+    // TODO: set boundaries for d_phase_term_1_tmp
+    calc_phase_term_1<<<grid, blocks>>>(d_phase_term_1_tmp, d_phase_term_1);
+
+    calc_phase_term_2_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_theta, d_phase_term_2_tmp_x, d_phase_term_2_tmp_y);
+    // TODO: set boundaries for d_phase_term_2_tmp_x, y
+    calc_phase_term_2<<<grid, blocks>>>(d_phase_term_2_tmp_x, d_phase_term_2_tmp_y, d_phase_term_2);
 
     calc_step<<<grid, blocks>>>(d_phase, d_T, d_phase_tmp, d_T);
     cudaDeviceSynchronize();
