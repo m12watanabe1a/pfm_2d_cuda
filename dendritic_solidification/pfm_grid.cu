@@ -1,3 +1,5 @@
+#include <__clang_cuda_math_forward_declares.h>
+#include <cstddef>
 #include <cstdlib>
 #include <iostream>
 #include <ostream>
@@ -12,26 +14,85 @@ const unsigned int field_size = 750;
 const unsigned int step = 100;
 
 __device__ unsigned int d_field_size;
+__device__ float d_dx;
+__device__ float d_a;
+__device__ float d_xi;
+__device__ float d_k;
+__device__ float d_theta_0;
+__device__ float d_a_bar;
 // TODO: Decrare variables for device
 
-__global__ void calc_step(double *d_phase, double *d_T, double *d_phase_tmp, double *d_T_tmp) {
+__device__ float get_a(float theta) {
+  return d_a_bar * ( 1 + d_xi * cos(d_k * (theta - d_theta_0)) );
+}
+
+__device__ float get_rat(float theta) {
+  return d_a_bar * d_xi * d_k * sin(d_k * (theta - d_theta_0));
+}
+
+__global__ void calc_step(float *d_phase, float *d_T, float *d_phase_tmp, float *d_T_tmp) {
   int x_i = blockIdx.x * blockDim.x + threadIdx.x;
   int y_i = blockIdx.y * blockDim.y + threadIdx.y;
   if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
-
   int i = y_i * d_field_size + x_i;
-  float ddx = d_dx * d_dx;
-  double rpx = (d_phase[i + 1] - 2.* d_phase[i] + d_phase[i - 1]) / ddx;
-  double rpy = (d_phase[i + d_field_size] - 2. * d_phase[i] + d_phase[i - d_field_size]) / ddx;
 
-  double dpi1 = d_a * d_a * (rpx + rpy);
-  double dpi2 = 4. * d_w * d_phase[i] * (1 - d_phase[i]) * (d_phase[i] - .5 + d_beta);
-  double dpi = dpi1 + dpi2;
-  d_phase_tmp[i] = d_phase[i] + d_tau * dpi;
+  float rpx = (d_phase[i + 1] - d_phase[i - 1]) / d_dx;
+  float rpy = (d_phase[i + d_field_size] - d_phase[i - d_field_size]) / d_dx;
+  float theta = atan2(rpy, rpx);
+
+
+  return;
 }
 
+__global__ void calc_phase_term_1_tmp(float *d_rpx, float *d_rpy, float *d_theta, float *d_phase_term_1_tmp) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  float nabla_phi = d_rpx[i] + d_rpy[i];
+  float a = get_a(d_theta[i]);
+
+  d_phase_term_1_tmp[i] = a * a * nabla_phi;
+  return;
+}
+
+__global__ void calc_phase_term_1(float *d_phase_term_1_tmp, float *d_phase_term_1) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  float rtx = (d_phase_term_1_tmp[i + 1] - d_phase_term_1_tmp[i + 1]) / d_dx;
+  float rty = (d_phase_term_1_tmp[i + d_field_size] - d_phase_term_1_tmp[i - d_field_size]) / d_dx;
+  d_phase_term_1[i] = rtx + rty;
+  return;
+}
+
+__global__ void calc_phase_nabla(float *d_phase, float *d_rpx, float *d_rpy) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  d_rpx[i] = (d_phase[i + 1] - d_phase[i - 1]) / d_dx;
+  d_rpy[i] = (d_phase[i + d_field_size] - d_phase[i - d_field_size]) / d_dx;
+  return;
+}
+
+__global__ void calc_theta(float *d_rpx, float *d_rpy, float *d_theta) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  d_theta[i] = atan2(d_rpy[i], d_rpx[i]);
+  return;
+}
+
+
 // 零ノイマン境界条件
-void set_bc(double *phase, double *T) {
+void set_bc(float *phase, float *T) {
   for (unsigned int x_i = 0; x_i < field_size; x_i++) {
     phase[x_i] = phase[field_size + x_i];
     phase[(field_size -1) * field_size + x_i] = phase[(field_size - 2) * field_size + x_i];
@@ -49,7 +110,7 @@ void set_bc(double *phase, double *T) {
   return;
 }
 
-bool save(double *phase, double *T, unsigned int n) {
+bool save(float *phase, float *T, unsigned int n) {
   try {
     std::ofstream file;
     std::ostringstream filename;
@@ -73,58 +134,85 @@ bool save(double *phase, double *T, unsigned int n) {
 }
 
 int main() {
-  unsigned int N = field_size * field_size;
-  double *phase, *T; // phase field for host
-  phase = (double *)malloc(N * sizeof(double));
-  T = (double *)malloc(N * sizeof(double));
-  double *d_phase, *d_phase_tmp, *d_T, *d_T_tmp; // phase field for device
+  const unsigned int N = field_size * field_size;
+  float *phase, *T; // phase field for host
+  phase = (float *)malloc(N * sizeof(float));
+  T = (float *)malloc(N * sizeof(float));
+  float *d_phase, *d_phase_tmp, *d_T, *d_T_tmp; // phase field for device
+  float *d_rpx, *d_rpy, *d_theta;
+  float *d_phase_term_1, *d_phase_term_1_tmp;
 
-  float dx = 20e-9;
-  // 熱伝導率
-  float K = 84.01;
-  // 比熱
-  float c = 5.42e+6;
-  // 潜熱
-  float L = 2.350e+9;
-  // 融点
-  float Tm = 1728.;
-  // 界面キネティック係数
-  float mu = 2.;
-  // ゆらぎ
-  float kai = .1;
-  // 優先成長方向
-  float theta_0 = 0.;
-  // 界面エネルギー
-  float gamma = 0.37;
-  // 異方性モード
-  float k = 4.;
-  // 界面幅
-  float delta = 4. * dx;
-  // 界面領域
-  float lambda = .1;
-  // 勾配計数
-  float b = 2. * std::atanh(1.-2.*lambda);
-  float a = std::sqrt(3. * delta * gamma / b);
-  // エネルギー障壁
-  float W = 6. * gamma * b / delta;
-  // フェーズフィールドモビリティ
-  float M_phi = b * Tm * mu / 3. / delta / L;
-  // 熱拡散係数
-  float kappa = K / c;
-  // 時間ステップ
-  float dt1 = dx * dx / 5. / M_phi / a / a;
-  float dt2 = dx * dx / 5. / kappa;
-  float dt = std::min(dt1, dt2);
-  printf("Time Step: %.3e[s]\n", dt);
-  // 固相初期半径
-  float r0 = 2. * dx;
+  // allocate memory to GPU
+  size_t size_field;
+  cudaMalloc((void**)&d_phase, size_field);
+  cudaMalloc((void**)&d_phase, size_field);
+  cudaMalloc((void**)&d_T, size_field);
+  cudaMalloc((void**)&d_T_tmp, size_field);
+  cudaMalloc((void**)&d_rpx, size_field);
+  cudaMalloc((void**)&d_rpy, size_field);
+  cudaMalloc((void**)&d_theta, size_field);
+  cudaMalloc((void**)&d_phase_term_1, size_field);
+  cudaMalloc((void**)&d_phase_term_1_tmp, size_field);
+
+
+  // 異方性強度
+  float xi = .01;
   // 無次元過冷却度
   float Delta = .5;
+
+  const float dx = 20e-9;
+  // 熱伝導率
+  const float K = 84.01;
+  // 比熱
+  const float c = 5.42e+6;
+  // 潜熱
+  const float L = 2.350e+9;
+  // 融点
+  const float Tm = 1728.;
+  // 界面キネティック係数
+  const float mu = 2.;
+  // ゆらぎ
+  const float kai = .1;
+  // 優先成長方向
+  const float theta_0 = 0.;
+  // 界面エネルギー
+  const float gamma = 0.37;
+  // 異方性モード
+  const float k = 4.;
+  // 界面幅
+  const float delta = 4. * dx;
+  // 界面領域
+  const float lambda = .1;
+  // 勾配計数
+  const float b = 2. * std::atanh(1.-2.*lambda);
+  const float a_bar = std::sqrt(3. * delta * gamma / b);
+  // エネルギー障壁
+  const float W = 6. * gamma * b / delta;
+  // フェーズフィールドモビリティ
+  const float M_phi = b * Tm * mu / 3. / delta / L;
+  // 熱拡散係数
+  const float kappa = K / c;
+  // 時間ステップ
+  const float dt1 = dx * dx / 5. / M_phi / a_bar / a_bar;
+  const float dt2 = dx * dx / 5. / kappa;
+  const float dt = std::min(dt1, dt2);
+  printf("Time Step: %.3e[s]\n", dt);
+  // 固相初期半径
+  const float r0 = 2. * dx;
   // 無次元過冷却温度
-  float T_0 = Tm - Delta * L / c;
+  const float T_0 = Tm - Delta * L / c;
+
 
   // TODO: set necessary variables for simulation
   cudaMemcpyToSymbol(d_field_size, &field_size, sizeof(unsigned int));
+
+  size_t size_val = sizeof(float);
+  cudaMemcpyToSymbol(d_dx, &dx, size_val);
+  cudaMemcpyToSymbol(d_a_bar, &a_bar, size_val);
+  cudaMemcpyToSymbol(d_xi, &xi, size_val);
+  cudaMemcpyToSymbol(d_k, &k, size_val);
+  cudaMemcpyToSymbol(d_theta_0, &theta_0, size_val);
+  cudaMemcpyToSymbol(d_a_bar, &a_bar, size_val);
 
   // 初期条件セット
   for (unsigned int y_i = 0; y_i < field_size; y_i++) {
@@ -139,18 +227,12 @@ int main() {
       float x = (x_i - 1) * dx;
 
       float r = std::sqrt(x*x + y*y) - r0;
-      phase[i] = .5 * (1. - std::tanh(std::sqrt(2. * W) / (2. * a) * r));
+      phase[i] = .5 * (1. - std::tanh(std::sqrt(2. * W) / (2. * a_bar) * r));
       T[i] = T_0 + phase[i] * (Tm - T_0);
     }
   }
 
   set_bc(phase, T);
-
-  // allocate memory to GPU
-  cudaMalloc((void**)&d_phase, N * sizeof(double));
-  cudaMalloc((void**)&d_phase, N * sizeof(double));
-  cudaMalloc((void**)&d_T, N * sizeof(double));
-  cudaMalloc((void**)&d_T_tmp, N * sizeof(double));
 
   // calc blocks
   int threadsPerBlock = 32;
@@ -163,16 +245,21 @@ int main() {
     printf("step: %d\n", n);
 
     // copy memory on GPU
-    cudaMemcpy(d_phase, phase, N * sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_T, T, N * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_phase, phase, N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_T, T, N * sizeof(float), cudaMemcpyHostToDevice);
+
+    calc_phase_nabla<<<grid, blocks>>>(d_phase, d_rpx, d_rpy);
+    calc_theta<<<grid, blocks>>>(d_rpx, d_rpy, d_theta);
+    calc_phase_term_1_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_phase, d_phase_term_1_tmp);
+    calc_phase_term_1<<<grid,blocks>>>(d_phase_term_1_tmp, d_phase_term_1);
 
     calc_step<<<grid, blocks>>>(d_phase, d_T, d_phase_tmp, d_T);
     cudaDeviceSynchronize();
     save(phase, T, n);
 
     // Swap
-    cudaMemcpy(phase, d_phase_tmp, N * sizeof(double), cudaMemcpyDeviceToHost);
-    cudaMemcpy(T, d_T_tmp, N * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(phase, d_phase_tmp, N * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(T, d_T_tmp, N * sizeof(float), cudaMemcpyDeviceToHost);
 
     // Boundary Condition
     set_bc(phase, T);
