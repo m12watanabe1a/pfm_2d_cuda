@@ -20,6 +20,8 @@ __device__ float d_xi;
 __device__ float d_k;
 __device__ float d_theta_0;
 __device__ float d_a_bar;
+__device__ float d_W;
+__device__ float d_Tm;
 // TODO: Decrare variables for device
 
 __device__ float get_a(float theta) {
@@ -28,6 +30,35 @@ __device__ float get_a(float theta) {
 
 __device__ float get_rat(float theta) {
   return d_a_bar * d_xi * d_k * sin(d_k * (theta - d_theta_0));
+}
+
+__global__ void init_field(float *phase, float *T, float r_0, float T_0) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  float y = (y_i - 1) * d_dx;
+  float x = (x_i - 1) * d_dx;
+  float r = sqrt(x*x + y*y) - r_0;
+  phase[i] = .5 * (1. - tanh(sqrt(2. * d_W) / (2. * d_a_bar) * r));
+  T[i] = T_0 + phase[i] * (d_Tm - T_0);
+  return;
+}
+
+__global__ void set_bc(float *field) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  if ( x_i >= field_size - 2)  return;
+  int i = x_i + 1;
+  // top
+  field[i] = field[i+field_size];
+  // bottom
+  field[field_size * (field_size - 1) + i] = field[field_size * (field_size - 2) + i];
+  // left
+  field[field_size * i] = field[field_size * i + 1];
+  // right
+  field[field_size * (i + 1) - 1] = field[field_size * (i + 1) - 2];
+  return;
 }
 
 __global__ void calc_step(float *d_phase, float *d_T, float *d_phase_tmp, float *d_T_tmp) {
@@ -162,16 +193,21 @@ bool save(float *phase, float *T, unsigned int n) {
 
 int main() {
   const unsigned int N = field_size * field_size;
+  size_t size_field = N * sizeof(float);
+
   float *phase, *T; // phase field for host
-  phase = (float *)malloc(N * sizeof(float));
-  T = (float *)malloc(N * sizeof(float));
-  float *d_phase, *d_phase_tmp, *d_T, *d_T_tmp; // phase field for device
+  phase = (float *)malloc(size_field);
+  T = (float *)malloc(size_field);
+
+  // phase field for device
+  float *d_phase, *d_phase_tmp, *d_T, *d_T_tmp;
   float *d_rpx, *d_rpy, *d_theta;
-  float *d_phase_term_1, *d_phase_term_1_tmp;
-  float *d_phase_term_2, *d_phase_term_2_tmp_x, *d_phase_term_2_tmp_y;
+  float *d_phase_term_1;
+  float *d_phase_term_2;
+
+  float *d_tmp_1, *d_tmp_2;
 
   // allocate memory to GPU
-  size_t size_field;
   cudaMalloc((void**)&d_phase, size_field);
   cudaMalloc((void**)&d_phase, size_field);
   cudaMalloc((void**)&d_T, size_field);
@@ -180,10 +216,10 @@ int main() {
   cudaMalloc((void**)&d_rpy, size_field);
   cudaMalloc((void**)&d_theta, size_field);
   cudaMalloc((void**)&d_phase_term_1, size_field);
-  cudaMalloc((void**)&d_phase_term_1_tmp, size_field);
   cudaMalloc((void**)&d_phase_term_2, size_field);
-  cudaMalloc((void**)&d_phase_term_2_tmp_x, size_field);
-  cudaMalloc((void**)&d_phase_term_2_tmp_y, size_field);
+
+  cudaMalloc((void**)&d_tmp_1, size_field);
+  cudaMalloc((void**)&d_tmp_2, size_field);
 
 
   // 異方性強度
@@ -203,7 +239,7 @@ int main() {
   // 界面キネティック係数
   const float mu = 2.;
   // ゆらぎ
-  const float kai = .1;
+  const float chi = .1;
   // 優先成長方向
   const float theta_0 = 0.;
   // 界面エネルギー
@@ -229,7 +265,7 @@ int main() {
   const float dt = std::min(dt1, dt2);
   printf("Time Step: %.3e[s]\n", dt);
   // 固相初期半径
-  const float r0 = 2. * dx;
+  const float r_0 = 2. * dx;
   // 無次元過冷却温度
   const float T_0 = Tm - Delta * L / c;
 
@@ -244,26 +280,8 @@ int main() {
   cudaMemcpyToSymbol(d_k, &k, size_val);
   cudaMemcpyToSymbol(d_theta_0, &theta_0, size_val);
   cudaMemcpyToSymbol(d_a_bar, &a_bar, size_val);
-
-  // 初期条件セット
-  for (unsigned int y_i = 0; y_i < field_size; y_i++) {
-    for (unsigned int x_i = 0; x_i < field_size; x_i++) {
-      int i = y_i * field_size + x_i;
-      if (x_i <= 0 || x_i >= field_size - 1 || y_i <= 0 || y_i >= field_size - 1) {
-        phase[i] = 0.0;
-        T[i] = T_0;
-        continue;
-      }
-      float y = (y_i - 1) * dx;
-      float x = (x_i - 1) * dx;
-
-      float r = std::sqrt(x*x + y*y) - r0;
-      phase[i] = .5 * (1. - std::tanh(std::sqrt(2. * W) / (2. * a_bar) * r));
-      T[i] = T_0 + phase[i] * (Tm - T_0);
-    }
-  }
-
-  set_bc(phase, T);
+  cudaMemcpyToSymbol(d_W, &W, size_val);
+  cudaMemcpyToSymbol(d_Tm, &Tm, size_val);
 
   // calc blocks
   int threadsPerBlock = 32;
@@ -271,26 +289,32 @@ int main() {
   dim3 blocks(threadsPerBlock, threadsPerBlock);
   dim3 grid(blocksInGrid, blocksInGrid);
 
+  // set initial conditions
+  init_field<<<grid, blocks>>>(d_phase, d_T, r_0, T_0);
+  set_bc<<<1, field_size -2>>>(d_phase);
+  set_bc<<<1, field_size -2>>>(d_T);
+
   // メインループ
   for (unsigned int n = 0; n < step; n++) {
     printf("step: %d\n", n);
 
-    // copy memory on GPU
-    cudaMemcpy(d_phase, phase, N * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_T, T, N * sizeof(float), cudaMemcpyHostToDevice);
-
     calc_phase_nabla<<<grid, blocks>>>(d_phase, d_rpx, d_rpy);
     calc_theta<<<grid, blocks>>>(d_rpx, d_rpy, d_theta);
 
-    calc_phase_term_1_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_phase, d_phase_term_1_tmp);
-    // TODO: set boundaries for d_phase_term_1_tmp
-    calc_phase_term_1<<<grid, blocks>>>(d_phase_term_1_tmp, d_phase_term_1);
+    calc_phase_term_1_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_phase, d_tmp_1);
+    set_bc<<<1, field_size -2>>>(d_tmp_1);
+    calc_phase_term_1<<<grid, blocks>>>(d_tmp_1, d_phase_term_1);
 
-    calc_phase_term_2_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_theta, d_phase_term_2_tmp_x, d_phase_term_2_tmp_y);
-    // TODO: set boundaries for d_phase_term_2_tmp_x, y
-    calc_phase_term_2<<<grid, blocks>>>(d_phase_term_2_tmp_x, d_phase_term_2_tmp_y, d_phase_term_2);
+    calc_phase_term_2_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_theta, d_tmp_1, d_tmp_2);
+    set_bc<<<1, field_size -2>>>(d_tmp_1);
+    set_bc<<<1, field_size -2>>>(d_tmp_2);
+    calc_phase_term_2<<<grid, blocks>>>(d_tmp_1, d_tmp_2, d_phase_term_2);
 
     calc_step<<<grid, blocks>>>(d_phase, d_T, d_phase_tmp, d_T);
+
+    // Copy Phase field from Device
+    cudaMemcpy(phase, d_phase, size_field, cudaMemcpyDeviceToHost);
+    cudaMemcpy(T, d_T, size_field, cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
     save(phase, T, n);
 
