@@ -1,4 +1,3 @@
-#include <cstdlib>
 #include <iostream>
 #include <ostream>
 #include <sstream>
@@ -16,25 +15,26 @@ __device__ float d_a;
 __device__ float d_w;
 __device__ float d_beta;
 __device__ float d_tau;
+__device__ float d_r0;
 
-__global__ void calc_step(double *d_phase, double *d_phase_tmp) {
+__global__ void calc_step(float *d_phase, float *d_phase_tmp) {
   int x_i = blockIdx.x * blockDim.x + threadIdx.x;
   int y_i = blockIdx.y * blockDim.y + threadIdx.y;
   if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
-
   int i = y_i * d_field_size + x_i;
-  float ddx = d_dx * d_dx;
-  double rpx = (d_phase[i + 1] - 2.* d_phase[i] + d_phase[i - 1]) / ddx;
-  double rpy = (d_phase[i + d_field_size] - 2. * d_phase[i] + d_phase[i - d_field_size]) / ddx;
 
-  double dpi1 = d_a * d_a * (rpx + rpy);
-  double dpi2 = 4. * d_w * d_phase[i] * (1 - d_phase[i]) * (d_phase[i] - .5 + d_beta);
-  double dpi = dpi1 + dpi2;
+  float ddx = d_dx * d_dx;
+  float rpx = (d_phase[i + 1] - 2.* d_phase[i] + d_phase[i - 1]) / ddx;
+  float rpy = (d_phase[i + d_field_size] - 2. * d_phase[i] + d_phase[i - d_field_size]) / ddx;
+
+  float dpi1 = d_a * d_a * (rpx + rpy);
+  float dpi2 = 4. * d_w * d_phase[i] * (1 - d_phase[i]) * (d_phase[i] - .5 + d_beta);
+  float dpi = dpi1 + dpi2;
   d_phase_tmp[i] = d_phase[i] + d_tau * dpi;
 }
 
 
-__global__ void set_bc_device(double *field) {
+__global__ void set_bc(float *field) {
   int x_i = blockIdx.x * blockDim.x + threadIdx.x;
   if ( x_i >= field_size - 2)  return;
   int i = x_i + 1;
@@ -49,25 +49,27 @@ __global__ void set_bc_device(double *field) {
   return;
 }
 
+__global__ void init_field(float *field) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) {
+    return;
+  }
+  int i = y_i * d_field_size + x_i;
 
-// 境界条件
-double* set_bc(double *phase) {
-  for (unsigned int x_i = 0; x_i < field_size; x_i++) {
-    phase[x_i] = phase[field_size + x_i];
-    phase[(field_size -1) * field_size + x_i] = phase[(field_size - 2) * field_size + x_i];
-  }
-  for (unsigned int y_i = 0; y_i < field_size; y_i++) {
-    phase[y_i * field_size] = phase[y_i * field_size + 1];
-    phase[(y_i + 1)*field_size - 1] = phase[(y_i + 1)*field_size - 2];
-  }
-  return phase;
+  float y = (y_i - 1) * d_dx;
+  float x = (x_i - 1) * d_dx;
+  float r = sqrt(x*x + y*y) - d_r0;
+  field[i] = .5 * (1. - tanh(sqrt(2. * d_w) / (2. * d_a) * r));
+  printf("%f\n", field[i]);
+  return;
 }
 
-bool save(double *phase, unsigned int n) {
+bool save(float *phase, unsigned int n) {
   try {
     std::ofstream file;
     std::ostringstream filename;
-    filename << "datas/step_" << std::setfill('0') << std::right << std::setw(2) << n << ".dat";
+    filename << "datas/step_" << std::setfill('0') << std::right << std::setw(std::log10(step)+1) << n << ".dat";
     file.open(filename.str(), std::ios_base::app);
 
     file << "#x #y #phase" << std::endl;
@@ -88,10 +90,10 @@ bool save(double *phase, unsigned int n) {
 
 int main() {
   unsigned int N = field_size * field_size;
-  double *phase; // phase field for host
-  double *d_phase, *d_phase_tmp; // phase field for device
+  float *phase; // phase field for host
+  float *d_phase, *d_phase_tmp; // phase field for device
 
-  phase = (double *)malloc(N * sizeof(double));
+  phase = (float *)malloc(N * sizeof(float));
 
   const float dx = 5e-7;
   // 界面エネルギー
@@ -125,28 +127,11 @@ int main() {
   cudaMemcpyToSymbol(d_w, &w, sizeof(float));
   cudaMemcpyToSymbol(d_beta, &beta, sizeof(float));
   cudaMemcpyToSymbol(d_tau, &tau, sizeof(float));
-
-  // 初期条件セット
-  for (unsigned int y_i = 0; y_i < field_size; y_i++) {
-    for (unsigned int x_i = 0; x_i < field_size; x_i++) {
-      int i = y_i * field_size + x_i;
-      if (x_i <= 0 || x_i >= field_size - 1 || y_i <= 0 || y_i >= field_size - 1) {
-        phase[i] = 0.0;
-        continue;
-      }
-      float y = (y_i - 1) * dx;
-      float x = (x_i - 1) * dx;
-
-      float r = std::sqrt(x*x + y*y) - r0;
-      phase[i] = .5 * (1. - std::tanh(std::sqrt(2. * w) / (2. * a) * r));
-    }
-  }
-
-  set_bc(phase);
+  cudaMemcpyToSymbol(d_r0, &r0, sizeof(float));
 
   // allocate memory to GPU
-  cudaMalloc((void**)&d_phase, N * sizeof(double));
-  cudaMalloc((void**)&d_phase_tmp, N * sizeof(double));
+  cudaMalloc((void**)&d_phase, N * sizeof(float));
+  cudaMalloc((void**)&d_phase_tmp, N * sizeof(float));
 
 
   int threadsPerBlock = 32;
@@ -154,22 +139,23 @@ int main() {
   dim3 blocks(threadsPerBlock, threadsPerBlock);
   dim3 grid(blocksInGrid, blocksInGrid);
 
-  cudaMemcpy(d_phase, phase, N * sizeof(double), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_phase, phase, N * sizeof(float), cudaMemcpyHostToDevice);
+
+  init_field<<<grid, blocks>>>(d_phase);
+  set_bc<<<1, field_size>>>(d_phase);
+
   // メインループ
   for (unsigned int n = 0; n < step; n++) {
     printf("step: %d\n", n);
-
-    // copy memory on GPU
-
-    calc_step<<<grid, blocks>>>(d_phase, d_phase_tmp);
-    cudaDeviceSynchronize();
+    cudaMemcpy(phase, d_phase, N * sizeof(float), cudaMemcpyDeviceToHost);
     save(phase, n);
 
-    // Swap
-    cudaMemcpy(d_phase, d_phase_tmp, N * sizeof(double), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(phase, d_phase_tmp, N * sizeof(double), cudaMemcpyDeviceToHost);
+    calc_step<<<grid, blocks>>>(d_phase, d_phase_tmp);
 
-    set_bc_device<<<1, field_size>>>(d_phase);
+    // Swap
+    cudaMemcpy(d_phase, d_phase_tmp, N * sizeof(float), cudaMemcpyDeviceToDevice);
+
+    set_bc<<<1, field_size>>>(d_phase);
   }
 
   free(phase);
