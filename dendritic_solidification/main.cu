@@ -58,6 +58,7 @@ __global__ void init_field(float *phase, float *T, float r_0, float T_0) {
   return;
 }
 
+// 零ノイマン境界条件
 __global__ void set_bc(float *field) {
   int x_i = blockIdx.x * blockDim.x + threadIdx.x;
   if ( x_i >= field_size - 2)  return;
@@ -204,25 +205,6 @@ __global__ void calc_theta(float *d_rpx, float *d_rpy, float *d_theta) {
   return;
 }
 
-
-// 零ノイマン境界条件
-void set_bc(float *phase, float *T) {
-  for (unsigned int x_i = 0; x_i < field_size; x_i++) {
-    phase[x_i] = phase[field_size + x_i];
-    phase[(field_size -1) * field_size + x_i] = phase[(field_size - 2) * field_size + x_i];
-
-    T[x_i] = T[field_size + x_i];
-    T[(field_size -1) * field_size + x_i] = T[(field_size - 2) * field_size + x_i];
-  }
-  for (unsigned int y_i = 0; y_i < field_size; y_i++) {
-    phase[y_i * field_size] = phase[y_i * field_size + 1];
-    phase[(y_i + 1)*field_size - 1] = phase[(y_i + 1)*field_size - 2];
-
-    T[y_i * field_size] = T[y_i * field_size + 1];
-    T[(y_i + 1)*field_size - 1] = T[(y_i + 1)*field_size - 2];
-  }
-  return;
-}
 
 bool save(float *phase, float *T, unsigned int n) {
   try {
@@ -395,7 +377,8 @@ int main() {
     cudaMemcpy(d_T, d_T_tmp, size_field, cudaMemcpyDeviceToDevice);
 
     // Boundary Condition
-    set_bc(phase, T);
+    set_bc<<<1, field_size -2>>>(d_phase);
+    set_bc<<<1, field_size -2>>>(d_T);
 
   }
 
