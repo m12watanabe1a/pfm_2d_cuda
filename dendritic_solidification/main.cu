@@ -228,7 +228,7 @@ bool save(float *phase, float *T, unsigned int n) {
   try {
     std::ofstream file;
     std::ostringstream filename;
-    filename << "datas/step_" << std::setfill('0') << std::right << std::setw(2) << n << ".dat";
+    filename << "datas/step_" << std::setfill('0') << std::right << std::setw(std::log10(step)+1) << n << ".dat";
     file.open(filename.str(), std::ios_base::app);
 
     file << "#x #y #phase #temperature" << std::endl;
@@ -340,6 +340,7 @@ int main() {
   cudaMemcpyToSymbol(d_W, &W, size_val);
   cudaMemcpyToSymbol(d_Tm, &Tm, size_val);
   cudaMemcpyToSymbol(d_L, &L, size_val);
+  cudaMemcpyToSymbol(d_chi, &chi, size_val);
   cudaMemcpyToSymbol(d_M_phi, &M_phi, size_val);
   cudaMemcpyToSymbol(d_dt, &dt, size_val);
   cudaMemcpyToSymbol(d_c, &c, size_val);
