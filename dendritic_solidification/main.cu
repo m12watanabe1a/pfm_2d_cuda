@@ -1,6 +1,3 @@
-#include <__clang_cuda_math_forward_declares.h>
-#include <cstddef>
-#include <cstdlib>
 #include <iostream>
 #include <ostream>
 #include <sstream>
@@ -9,6 +6,9 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <time.h>
+#include <curand.h>
+#include <curand_kernel.h>
 
 const unsigned int field_size = 750;
 const unsigned int step = 100;
@@ -22,7 +22,12 @@ __device__ float d_theta_0;
 __device__ float d_a_bar;
 __device__ float d_W;
 __device__ float d_Tm;
-// TODO: Decrare variables for device
+__device__ float d_L;
+__device__ float d_chi;
+__device__ float d_M_phi;
+__device__ float d_dt;
+__device__ float d_c;
+__device__ float d_kappa;
 
 __device__ float get_a(float theta) {
   return d_a_bar * ( 1 + d_xi * cos(d_k * (theta - d_theta_0)) );
@@ -30,6 +35,13 @@ __device__ float get_a(float theta) {
 
 __device__ float get_rat(float theta) {
   return d_a_bar * d_xi * d_k * sin(d_k * (theta - d_theta_0));
+}
+
+__global__ void setCurand(unsigned long long seed, curandState *state){
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  int i = y_i * d_field_size + x_i;
+  curand_init(seed, i, 0, &state[i]);
 }
 
 __global__ void init_field(float *phase, float *T, float r_0, float T_0) {
@@ -70,7 +82,6 @@ __global__ void calc_step(float *d_phase, float *d_T, float *d_phase_tmp, float 
   float rpx = (d_phase[i + 1] - d_phase[i - 1]) / d_dx;
   float rpy = (d_phase[i + d_field_size] - d_phase[i - d_field_size]) / d_dx;
   float theta = atan2(rpy, rpx);
-
   return;
 }
 
@@ -124,6 +135,51 @@ __global__ void calc_phase_term_2_tmp(float *d_rpx, float *d_rpy, float *d_theta
 
   d_phase_term_2_tmp_x[i] = a * rat * d_rpy[i];
   d_phase_term_2_tmp_y[i] = a * rat * d_rpx[i];
+  return;
+}
+
+__global__ void calc_phase_term_3(float *d_phase, float *d_T,  curandState *state, float *d_phase_term_3) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  float chi =  2. * d_chi * curand_normal(&state[i]) - d_chi;
+  d_phase_term_3[i] = 4. * d_W * d_phase[i] * (1. - d_phase[i])
+    * (d_phase[i] - .5 - 15 / 2. / d_W * d_L * (d_T[i] - d_Tm) / d_Tm * d_phase[i] * (1. - d_phase[i]) + chi);
+}
+
+__global__ void calc_phase_func(float *d_phase_term_1, float *d_phase_term_2, float *d_phase_term_3, float *d_phase_tmp) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  d_phase_tmp[i] = d_M_phi * (d_phase_term_1[i] + d_phase_term_2[i] + d_phase_term_3[i]);
+  return;
+}
+
+__global__ void calc_next_phase(float *d_phase_func, float *d_phase, float *d_phase_tmp) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  d_phase_tmp[i] = d_phase[i] + d_phase_func[i] * d_dt;
+  return;
+}
+
+__global__ void calc_next_T(float *d_T, float *d_phase, float *d_phase_d_t, float *d_T_tmp) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
+  int i = y_i * d_field_size + x_i;
+
+  float rTx = (d_T[i + 1] - 2. * d_T[i] + d_T[i - 1]) / d_dx / d_dx;
+  float rTy = (d_T[i + d_field_size] - 2. * d_T[i] + d_T[i - d_field_size]) / d_dx / d_dx;
+  float term_1 = d_kappa * (rTx + rTy);
+  float term_2 = 30.* pow(d_phase[i], 2.) * pow((1. - d_phase[i]), 2.) * d_L / d_c * d_phase_d_t[i];
+  d_T_tmp[i] = (term_1 + term_2) * d_dt;
   return;
 }
 
@@ -204,6 +260,7 @@ int main() {
   float *d_rpx, *d_rpy, *d_theta;
   float *d_phase_term_1;
   float *d_phase_term_2;
+  float *d_phase_term_3;
 
   float *d_tmp_1, *d_tmp_2;
 
@@ -217,6 +274,7 @@ int main() {
   cudaMalloc((void**)&d_theta, size_field);
   cudaMalloc((void**)&d_phase_term_1, size_field);
   cudaMalloc((void**)&d_phase_term_2, size_field);
+  cudaMalloc((void**)&d_phase_term_3, size_field);
 
   cudaMalloc((void**)&d_tmp_1, size_field);
   cudaMalloc((void**)&d_tmp_2, size_field);
@@ -270,7 +328,6 @@ int main() {
   const float T_0 = Tm - Delta * L / c;
 
 
-  // TODO: set necessary variables for simulation
   cudaMemcpyToSymbol(d_field_size, &field_size, sizeof(unsigned int));
 
   size_t size_val = sizeof(float);
@@ -282,12 +339,22 @@ int main() {
   cudaMemcpyToSymbol(d_a_bar, &a_bar, size_val);
   cudaMemcpyToSymbol(d_W, &W, size_val);
   cudaMemcpyToSymbol(d_Tm, &Tm, size_val);
+  cudaMemcpyToSymbol(d_L, &L, size_val);
+  cudaMemcpyToSymbol(d_M_phi, &M_phi, size_val);
+  cudaMemcpyToSymbol(d_dt, &dt, size_val);
+  cudaMemcpyToSymbol(d_c, &c, size_val);
+  cudaMemcpyToSymbol(d_kappa, &kappa, size_val);
 
   // calc blocks
   int threadsPerBlock = 32;
   int blocksInGrid = (field_size + threadsPerBlock -1)/threadsPerBlock;
   dim3 blocks(threadsPerBlock, threadsPerBlock);
   dim3 grid(blocksInGrid, blocksInGrid);
+
+  // set randam seed
+  curandState *state;
+  cudaMalloc((void**)&state, N * sizeof(curandState));
+  setCurand<<<grid, blocks>>>(time(NULL), state);
 
   // set initial conditions
   init_field<<<grid, blocks>>>(d_phase, d_T, r_0, T_0);
@@ -297,6 +364,12 @@ int main() {
   // メインループ
   for (unsigned int n = 0; n < step; n++) {
     printf("step: %d\n", n);
+
+    // Copy Phase field from Device
+    cudaMemcpy(phase, d_phase, size_field, cudaMemcpyDeviceToHost);
+    cudaMemcpy(T, d_T, size_field, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+    save(phase, T, n);
 
     calc_phase_nabla<<<grid, blocks>>>(d_phase, d_rpx, d_rpy);
     calc_theta<<<grid, blocks>>>(d_rpx, d_rpy, d_theta);
@@ -310,17 +383,15 @@ int main() {
     set_bc<<<1, field_size -2>>>(d_tmp_2);
     calc_phase_term_2<<<grid, blocks>>>(d_tmp_1, d_tmp_2, d_phase_term_2);
 
-    calc_step<<<grid, blocks>>>(d_phase, d_T, d_phase_tmp, d_T);
+    calc_phase_term_3<<<grid, blocks>>>(d_phase, d_T, state, d_phase_term_3);
+    calc_phase_func<<<grid, blocks>>>(d_phase_term_1, d_phase_term_2, d_phase_term_3, d_tmp_1);
 
-    // Copy Phase field from Device
-    cudaMemcpy(phase, d_phase, size_field, cudaMemcpyDeviceToHost);
-    cudaMemcpy(T, d_T, size_field, cudaMemcpyDeviceToHost);
-    cudaDeviceSynchronize();
-    save(phase, T, n);
+    calc_next_phase<<<grid, blocks>>>(d_tmp_1, d_phase, d_phase_tmp);
+    calc_next_T<<<grid, blocks>>>(d_T, d_phase, d_tmp_1, d_T_tmp);
 
     // Swap
-    cudaMemcpy(phase, d_phase_tmp, N * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(T, d_T_tmp, N * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(d_phase, d_phase_tmp, size_field, cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_T, d_T_tmp, size_field, cudaMemcpyDeviceToDevice);
 
     // Boundary Condition
     set_bc(phase, T);
@@ -328,12 +399,21 @@ int main() {
   }
 
   free(phase);
+  free(T);
+
   cudaFree(d_phase);
   cudaFree(d_phase_tmp);
-
-  free(T);
   cudaFree(d_T);
   cudaFree(d_T_tmp);
+  cudaFree(d_rpx);
+  cudaFree(d_rpy);
+  cudaFree(d_theta);
+  cudaFree(d_phase_term_1);
+  cudaFree(d_phase_term_2);
+  cudaFree(d_phase_term_3);
+  cudaFree(d_tmp_1);
+  cudaFree(d_tmp_2);
+  cudaFree(state);
 
   return 0;
 }
