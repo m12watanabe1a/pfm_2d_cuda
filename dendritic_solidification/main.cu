@@ -351,7 +351,6 @@ int main() {
     // Copy Phase field from Device
     cudaMemcpy(phase, d_phase, size_field, cudaMemcpyDeviceToHost);
     cudaMemcpy(T, d_T, size_field, cudaMemcpyDeviceToHost);
-    cudaDeviceSynchronize();
     save(phase, T, n);
 
     calc_phase_nabla<<<grid, blocks>>>(d_phase, d_rpx, d_rpy);

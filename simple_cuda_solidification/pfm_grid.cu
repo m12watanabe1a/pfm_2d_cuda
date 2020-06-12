@@ -33,6 +33,23 @@ __global__ void calc_step(double *d_phase, double *d_phase_tmp) {
   d_phase_tmp[i] = d_phase[i] + d_tau * dpi;
 }
 
+
+__global__ void set_bc_device(double *field) {
+  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
+  if ( x_i >= field_size - 2)  return;
+  int i = x_i + 1;
+  // top
+  field[i] = field[i+field_size];
+  // bottom
+  field[field_size * (field_size - 1) + i] = field[field_size * (field_size - 2) + i];
+  // left
+  field[field_size * i] = field[field_size * i + 1];
+  // right
+  field[field_size * (i + 1) - 1] = field[field_size * (i + 1) - 2];
+  return;
+}
+
+
 // 境界条件
 double* set_bc(double *phase) {
   for (unsigned int x_i = 0; x_i < field_size; x_i++) {
@@ -137,23 +154,22 @@ int main() {
   dim3 blocks(threadsPerBlock, threadsPerBlock);
   dim3 grid(blocksInGrid, blocksInGrid);
 
+  cudaMemcpy(d_phase, phase, N * sizeof(double), cudaMemcpyHostToDevice);
   // メインループ
   for (unsigned int n = 0; n < step; n++) {
     printf("step: %d\n", n);
 
     // copy memory on GPU
-    cudaMemcpy(d_phase, phase, N * sizeof(double), cudaMemcpyHostToDevice);
 
     calc_step<<<grid, blocks>>>(d_phase, d_phase_tmp);
     cudaDeviceSynchronize();
     save(phase, n);
 
     // Swap
+    cudaMemcpy(d_phase, d_phase_tmp, N * sizeof(double), cudaMemcpyDeviceToDevice);
     cudaMemcpy(phase, d_phase_tmp, N * sizeof(double), cudaMemcpyDeviceToHost);
 
-    // Boundary Condition
-    set_bc(phase);
-
+    set_bc_device<<<1, field_size>>>(d_phase);
   }
 
   free(phase);
