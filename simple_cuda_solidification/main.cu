@@ -142,7 +142,7 @@ int main() {
   cudaMemcpy(d_phase, phase, N * sizeof(float), cudaMemcpyHostToDevice);
 
   init_field<<<grid, blocks>>>(d_phase);
-  set_bc<<<1, field_size>>>(d_phase);
+  set_bc<<<1, field_size - 2>>>(d_phase);
 
   // メインループ
   for (unsigned int n = 0; n < step; n++) {
@@ -155,7 +155,7 @@ int main() {
     // Swap
     cudaMemcpy(d_phase, d_phase_tmp, N * sizeof(float), cudaMemcpyDeviceToDevice);
 
-    set_bc<<<1, field_size>>>(d_phase);
+    set_bc<<<1, field_size - 2>>>(d_phase);
   }
 
   free(phase);
