@@ -115,7 +115,7 @@ __global__ void calc_phase_term_2(float *d_phase_term_2_tmp_x, float *d_phase_te
   int i = y_i * d_field_size + x_i;
 
   float rtx = (d_phase_term_2_tmp_x[i + 1] - d_phase_term_2_tmp_x[i - 1]) / d_dx;
-  float rty = (d_phase_term_2_tmp_y[i + field_size] - d_phase_term_2_tmp_y[i - field_size]) / d_dx;
+  float rty = (d_phase_term_2_tmp_y[i + d_field_size] - d_phase_term_2_tmp_y[i - d_field_size]) / d_dx;
 
   d_phase_term_2[i] = -rtx + rty;
   return;
