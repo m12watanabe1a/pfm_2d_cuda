@@ -10,8 +10,16 @@
 #include <curand.h>
 #include <curand_kernel.h>
 
-const unsigned int field_size = 100;
-const unsigned int step = 100000;
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true) {
+  if (code != cudaSuccess) {
+    fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+    if (abort) exit(code);
+  }
+}
+
+const unsigned int field_size = 750;
+const unsigned int step = 10000;
 
 __device__ unsigned int d_field_size;
 __device__ float d_dx;
@@ -34,13 +42,14 @@ __device__ float get_a(float theta) {
 }
 
 __device__ float get_rat(float theta) {
-  return d_a_bar * d_xi * d_k * sin(d_k * (theta - d_theta_0));
+  return -1. * d_a_bar * d_xi * d_k * sin(d_k * (theta - d_theta_0));
 }
 
 __global__ void setCurand(unsigned long long seed, curandState *state){
   int x_i = blockIdx.x * blockDim.x + threadIdx.x;
   int y_i = blockIdx.y * blockDim.y + threadIdx.y;
   int i = y_i * d_field_size + x_i;
+  if ( x_i > d_field_size - 1 || y_i > d_field_size - 1 ) return;
   curand_init(seed, i, 0, &state[i]);
 }
 
@@ -61,16 +70,16 @@ __global__ void init_field(float *phase, float *T, float r_0, float T_0) {
 // 零ノイマン境界条件
 __global__ void set_bc(float *field) {
   int x_i = blockIdx.x * blockDim.x + threadIdx.x;
-  if ( x_i >= field_size - 2)  return;
+  if ( x_i >= d_field_size - 2)  return;
   int i = x_i + 1;
   // top
-  field[i] = field[i+field_size];
+  field[i] = field[i+d_field_size];
   // bottom
-  field[field_size * (field_size - 1) + i] = field[field_size * (field_size - 2) + i];
+  field[d_field_size * (d_field_size - 1) + i] = field[d_field_size * (d_field_size - 2) + i];
   // left
-  field[field_size * i] = field[field_size * i + 1];
+  field[d_field_size * i] = field[d_field_size * i + 1];
   // right
-  field[field_size * (i + 1) - 1] = field[field_size * (i + 1) - 2];
+  field[d_field_size * (i + 1) - 1] = field[d_field_size * (i + 1) - 2];
   return;
 }
 
@@ -132,7 +141,7 @@ __global__ void calc_phase_term_3(float *d_phase, float *d_T,  curandState *stat
   if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
   int i = y_i * d_field_size + x_i;
 
-  float chi =  2. * d_chi * curand_normal(&state[i]) - d_chi;
+  float chi =  2. * d_chi * curand_uniform(&state[i]) - d_chi;
   d_phase_term_3[i] = 4. * d_W * d_phase[i] * (1. - d_phase[i])
     * (d_phase[i] - .5 - 15. / 2. / d_W * d_L * (d_T[i] - d_Tm) / d_Tm * d_phase[i] * (1. - d_phase[i]) + chi);
 }
@@ -153,7 +162,13 @@ __global__ void calc_next_phase(float *d_phase_func, float *d_phase, float *d_ph
   if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
   int i = y_i * d_field_size + x_i;
 
-  d_phase_tmp[i] = d_phase[i] + d_phase_func[i] * d_dt;
+  float next_phase = d_phase[i] + d_phase_func[i] * d_dt;
+  if ( next_phase > 1.0 ) {
+    next_phase = 1.;
+  } else if ( next_phase < 0.0 ) {
+    next_phase = 0.;
+  }
+  d_phase_tmp[i] = next_phase;
   return;
 }
 
@@ -188,8 +203,16 @@ __global__ void calc_theta(float *d_rpx, float *d_rpy, float *d_theta) {
   if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
   int i = y_i * d_field_size + x_i;
 
-  d_theta[i] = atan2(d_rpy[i], d_rpx[i]);
+  d_theta[i] = atan2(-d_rpy[i], -d_rpx[i]);
   return;
+}
+
+void checkError(cudaError_t error, std::string function){
+  if(error != cudaSuccess) {
+    std::cout << function;
+    printf(" has a problem with error code %d and desc: %s\n", error, cudaGetErrorString(error));
+    exit(-1);
+  }
 }
 
 
@@ -234,25 +257,25 @@ int main() {
   float *d_tmp_1, *d_tmp_2;
 
   // allocate memory to GPU
-  cudaMalloc((void**)&d_phase, size_field);
-  cudaMalloc((void**)&d_phase, size_field);
-  cudaMalloc((void**)&d_T, size_field);
-  cudaMalloc((void**)&d_T_tmp, size_field);
-  cudaMalloc((void**)&d_rpx, size_field);
-  cudaMalloc((void**)&d_rpy, size_field);
-  cudaMalloc((void**)&d_theta, size_field);
-  cudaMalloc((void**)&d_phase_term_1, size_field);
-  cudaMalloc((void**)&d_phase_term_2, size_field);
-  cudaMalloc((void**)&d_phase_term_3, size_field);
+  checkError( cudaMalloc((void**)&d_phase, size_field), "d_phase");
+  checkError(cudaMalloc((void**)&d_phase_tmp, size_field), "d_phase_tmp");
+  checkError(cudaMalloc((void**)&d_T, size_field), "d_T");
+  checkError(cudaMalloc((void**)&d_T_tmp, size_field), "d_T_tmp");
+  checkError(cudaMalloc((void**)&d_rpx, size_field), "d_rpx");
+  checkError(cudaMalloc((void**)&d_rpy, size_field), "d_rpy");
+  checkError(cudaMalloc((void**)&d_theta, size_field), "d_theta");
+  checkError(cudaMalloc((void**)&d_phase_term_1, size_field), "d_phase_term_1");
+  checkError(cudaMalloc((void**)&d_phase_term_2, size_field), "d_phase_term_2");
+  checkError(cudaMalloc((void**)&d_phase_term_3, size_field), "d_phase_term_3");
 
-  cudaMalloc((void**)&d_tmp_1, size_field);
-  cudaMalloc((void**)&d_tmp_2, size_field);
+  checkError(cudaMalloc((void**)&d_tmp_1, size_field), "d_tmp_1");
+  checkError(cudaMalloc((void**)&d_tmp_2, size_field), "d_tmp_2");
 
 
   // 異方性強度
-  float xi = .01;
+  float xi = .005;
   // 無次元過冷却度
-  float Delta = .5;
+  float Delta = .9;
 
   const float dx = 20e-9;
   // 熱伝導率
@@ -323,7 +346,7 @@ int main() {
 
   // set randam seed
   curandState *state;
-  cudaMalloc((void**)&state, N * sizeof(curandState));
+  checkError(cudaMalloc((void**)&state, N * sizeof(curandState)), "state");
   setCurand<<<grid, blocks>>>(time(NULL), state);
 
   // set initial conditions
@@ -335,10 +358,10 @@ int main() {
   for (unsigned int n = 0; n < step; n++) {
     printf("step: %d\n", n);
 
-    // Copy Phase field from Device
-    cudaMemcpy(phase, d_phase, size_field, cudaMemcpyDeviceToHost);
-    cudaMemcpy(T, d_T, size_field, cudaMemcpyDeviceToHost);
-    if ( n == step - 1 ) {
+    if ( n == 0 || n == step - 1 ) {
+      // Copy Phase field from Device
+      cudaMemcpy(phase, d_phase, size_field, cudaMemcpyDeviceToHost);
+      cudaMemcpy(T, d_T, size_field, cudaMemcpyDeviceToHost);
       save(phase, T, n);
     }
 
@@ -367,7 +390,7 @@ int main() {
     // Boundary Condition
     set_bc<<<1, field_size -2>>>(d_phase);
     set_bc<<<1, field_size -2>>>(d_T);
-
+    gpuErrchk(cudaDeviceSynchronize());
   }
 
   free(phase);
