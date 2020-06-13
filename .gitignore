@@ -8,3 +8,5 @@
 *.out
 
 .ccls-cache
+
+datas/
