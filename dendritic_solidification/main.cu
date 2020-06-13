@@ -251,10 +251,12 @@ int main() {
   float *d_phase, *d_phase_tmp, *d_T, *d_T_tmp;
   float *d_rpx, *d_rpy, *d_theta;
   float *d_phase_term_1;
+  float *d_phase_term_1_tmp;
   float *d_phase_term_2;
+  float *d_phase_term_2_tmp_x;
+  float *d_phase_term_2_tmp_y;
   float *d_phase_term_3;
-
-  float *d_tmp_1, *d_tmp_2;
+  float *d_phase_func;
 
   // allocate memory to GPU
   checkError( cudaMalloc((void**)&d_phase, size_field), "d_phase");
@@ -265,11 +267,12 @@ int main() {
   checkError(cudaMalloc((void**)&d_rpy, size_field), "d_rpy");
   checkError(cudaMalloc((void**)&d_theta, size_field), "d_theta");
   checkError(cudaMalloc((void**)&d_phase_term_1, size_field), "d_phase_term_1");
+  checkError(cudaMalloc((void**)&d_phase_term_1_tmp, size_field), "d_phase_term_1_tmp");
   checkError(cudaMalloc((void**)&d_phase_term_2, size_field), "d_phase_term_2");
+  checkError(cudaMalloc((void**)&d_phase_term_2_tmp_x, size_field), "d_phase_term_2_tmp_x");
+  checkError(cudaMalloc((void**)&d_phase_term_2_tmp_y, size_field), "d_phase_term_2_tmp_y");
   checkError(cudaMalloc((void**)&d_phase_term_3, size_field), "d_phase_term_3");
-
-  checkError(cudaMalloc((void**)&d_tmp_1, size_field), "d_tmp_1");
-  checkError(cudaMalloc((void**)&d_tmp_2, size_field), "d_tmp_2");
+  checkError(cudaMalloc((void**)&d_phase_func, size_field), "d_phase_func");
 
 
   // 異方性強度
@@ -368,20 +371,20 @@ int main() {
     calc_phase_nabla<<<grid, blocks>>>(d_phase, d_rpx, d_rpy);
     calc_theta<<<grid, blocks>>>(d_rpx, d_rpy, d_theta);
 
-    calc_phase_term_1_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_phase, d_tmp_1);
-    set_bc<<<1, field_size -2>>>(d_tmp_1);
-    calc_phase_term_1<<<grid, blocks>>>(d_tmp_1, d_phase_term_1);
+    calc_phase_term_1_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_phase, d_phase_term_1_tmp);
+    set_bc<<<1, field_size -2>>>(d_phase_term_1_tmp);
+    calc_phase_term_1<<<grid, blocks>>>(d_phase_term_1_tmp, d_phase_term_1);
 
-    calc_phase_term_2_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_theta, d_tmp_1, d_tmp_2);
-    set_bc<<<1, field_size -2>>>(d_tmp_1);
-    set_bc<<<1, field_size -2>>>(d_tmp_2);
-    calc_phase_term_2<<<grid, blocks>>>(d_tmp_1, d_tmp_2, d_phase_term_2);
+    calc_phase_term_2_tmp<<<grid, blocks>>>(d_rpx, d_rpy, d_theta, d_phase_term_2_tmp_x, d_phase_term_2_tmp_y);
+    set_bc<<<1, field_size -2>>>(d_phase_term_2_tmp_x);
+    set_bc<<<1, field_size -2>>>(d_phase_term_2_tmp_y);
+    calc_phase_term_2<<<grid, blocks>>>(d_phase_term_2_tmp_x, d_phase_term_2_tmp_y, d_phase_term_2);
 
     calc_phase_term_3<<<grid, blocks>>>(d_phase, d_T, state, d_phase_term_3);
-    calc_phase_func<<<grid, blocks>>>(d_phase_term_1, d_phase_term_2, d_phase_term_3, d_tmp_1);
+    calc_phase_func<<<grid, blocks>>>(d_phase_term_1, d_phase_term_2, d_phase_term_3, d_phase_func);
 
-    calc_next_phase<<<grid, blocks>>>(d_tmp_1, d_phase, d_phase_tmp);
-    calc_next_T<<<grid, blocks>>>(d_T, d_phase, d_tmp_1, d_T_tmp);
+    calc_next_phase<<<grid, blocks>>>(d_phase_func, d_phase, d_phase_tmp);
+    calc_next_T<<<grid, blocks>>>(d_T, d_phase, d_phase_func, d_T_tmp);
 
     // Swap
     cudaMemcpy(d_phase, d_phase_tmp, size_field, cudaMemcpyDeviceToDevice);
@@ -406,8 +409,10 @@ int main() {
   cudaFree(d_phase_term_1);
   cudaFree(d_phase_term_2);
   cudaFree(d_phase_term_3);
-  cudaFree(d_tmp_1);
-  cudaFree(d_tmp_2);
+  cudaFree(d_phase_term_1_tmp);
+  cudaFree(d_phase_term_2_tmp_x);
+  cudaFree(d_phase_term_2_tmp_y);
+  cudaFree(d_phase_func);
   cudaFree(state);
 
   return 0;
