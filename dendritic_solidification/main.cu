@@ -10,8 +10,8 @@
 #include <curand.h>
 #include <curand_kernel.h>
 
-const unsigned int field_size = 750;
-const unsigned int step = 100;
+const unsigned int field_size = 100;
+const unsigned int step = 100000;
 
 __device__ unsigned int d_field_size;
 __device__ float d_dx;
@@ -74,19 +74,6 @@ __global__ void set_bc(float *field) {
   return;
 }
 
-__global__ void calc_step(float *d_phase, float *d_T, float *d_phase_tmp, float *d_T_tmp) {
-  int x_i = blockIdx.x * blockDim.x + threadIdx.x;
-  int y_i = blockIdx.y * blockDim.y + threadIdx.y;
-  if (x_i <= 0 || x_i >= d_field_size - 1 || y_i <= 0 || y_i >= d_field_size - 1) return;
-  int i = y_i * d_field_size + x_i;
-
-  float rpx = (d_phase[i + 1] - d_phase[i - 1]) / d_dx;
-  float rpy = (d_phase[i + d_field_size] - d_phase[i - d_field_size]) / d_dx;
-  float theta = atan2(rpy, rpx);
-  return;
-}
-
-
 __global__ void calc_phase_term_1(float *d_phase_term_1_tmp, float *d_phase_term_1) {
   int x_i = blockIdx.x * blockDim.x + threadIdx.x;
   int y_i = blockIdx.y * blockDim.y + threadIdx.y;
@@ -147,7 +134,7 @@ __global__ void calc_phase_term_3(float *d_phase, float *d_T,  curandState *stat
 
   float chi =  2. * d_chi * curand_normal(&state[i]) - d_chi;
   d_phase_term_3[i] = 4. * d_W * d_phase[i] * (1. - d_phase[i])
-    * (d_phase[i] - .5 - 15 / 2. / d_W * d_L * (d_T[i] - d_Tm) / d_Tm * d_phase[i] * (1. - d_phase[i]) + chi);
+    * (d_phase[i] - .5 - 15. / 2. / d_W * d_L * (d_T[i] - d_Tm) / d_Tm * d_phase[i] * (1. - d_phase[i]) + chi);
 }
 
 __global__ void calc_phase_func(float *d_phase_term_1, float *d_phase_term_2, float *d_phase_term_3, float *d_phase_tmp) {
@@ -180,7 +167,7 @@ __global__ void calc_next_T(float *d_T, float *d_phase, float *d_phase_d_t, floa
   float rTy = (d_T[i + d_field_size] - 2. * d_T[i] + d_T[i - d_field_size]) / d_dx / d_dx;
   float term_1 = d_kappa * (rTx + rTy);
   float term_2 = 30.* pow(d_phase[i], 2.) * pow((1. - d_phase[i]), 2.) * d_L / d_c * d_phase_d_t[i];
-  d_T_tmp[i] = (term_1 + term_2) * d_dt;
+  d_T_tmp[i] = d_T[i] + (term_1 + term_2) * d_dt;
   return;
 }
 
@@ -351,7 +338,9 @@ int main() {
     // Copy Phase field from Device
     cudaMemcpy(phase, d_phase, size_field, cudaMemcpyDeviceToHost);
     cudaMemcpy(T, d_T, size_field, cudaMemcpyDeviceToHost);
-    save(phase, T, n);
+    if ( n == step - 1 ) {
+      save(phase, T, n);
+    }
 
     calc_phase_nabla<<<grid, blocks>>>(d_phase, d_rpx, d_rpy);
     calc_theta<<<grid, blocks>>>(d_rpx, d_rpy, d_theta);
